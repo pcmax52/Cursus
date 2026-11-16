@@ -243,24 +243,30 @@ function initFirebase(){
         ui.syncState="syncing";
         render();
         const ref=fbDb.collection("users").doc(user.uid);
-        fbUnsub=ref.onSnapshot(snap=>{
-          ui.syncState="ok";
+        fbUnsub=ref.onSnapshot({includeMetadataChanges:true}, snap=>{
           if(snap.exists){
             const remote=snap.data();
             if(remote && Array.isArray(remote.subjects)){
               const rTime=remote.updatedAt||0;
               const lTime=S.updatedAt||0;
-              if(rTime > lTime){
+              // Si le cloud a des données plus récentes (ou si le navigateur local est vierge)
+              if(rTime > lTime || (lTime === 0 && rTime > 0)){
                 isApplyingRemote=true;
                 S=remote;
                 save(true);
                 isApplyingRemote=false;
-              } else if(lTime > rTime){
+              } else if(lTime > rTime && !snap.metadata.fromCache){
+                // On n'envoie vers le cloud que si on a des vraies modifications locales
                 ref.set(S).catch(()=>{ui.syncState="err";render();});
               }
             }
-          } else {
-            ref.set(S).catch(()=>{ui.syncState="err";render();});
+            ui.syncState="ok";
+          } else if(!snap.metadata.fromCache){
+            // Le document n'existe VRAIMENT pas sur le serveur (pas juste absent du cache local)
+            if(S.updatedAt > 0){
+              ref.set(S).catch(()=>{ui.syncState="err";render();});
+            }
+            ui.syncState="ok";
           }
           render();
         }, err=>{
@@ -281,7 +287,8 @@ function initFirebase(){
 }
 
 function scheduleCloudPush(){
-  if(isApplyingRemote || !fbAuth || !fbAuth.currentUser || !fbDb) return;
+  // Ne jamais pousser automatiquement des données par défaut (updatedAt === 0)
+  if(isApplyingRemote || !fbAuth || !fbAuth.currentUser || !fbDb || !S.updatedAt) return;
   ui.syncState="syncing";
   clearTimeout(pushTimer);
   pushTimer=setTimeout(()=>{
