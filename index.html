@@ -162,20 +162,11 @@ let fbApp=null, fbAuth=null, fbDb=null, fbUnsub=null, isApplyingRemote=false, pu
 
 // 1. Dans seed() : mettre updatedAt à 0 pour ne jamais écraser le cloud depuis un navigateur neuf
 function seed(){
-  const mk=(n,c,chs)=>({id:uid(),name:n,color:c,chapters:chs.map(([name,level,count,ago])=>({id:uid(),name,level,count,last:ago==null?null:add(today,-ago)}))});
-  const a=mk("Anatomie","#D9485F",[["Membre supérieur",3,4,3],["Thorax",1,1,16],["Abdomen",0,0,null]]);
-  const p=mk("Physiologie","#2F7DD1",[["Cardiovasculaire",2,2,8],["Rénal",1,1,20]]);
-  const b=mk("Biochimie","#E2A31B",[["Métabolisme du glucose",4,5,2],["Enzymologie",2,2,11]]);
-  const T=(date,slot,text,s,c)=>({id:uid(),date,slot,text,subj:s.id,chap:c.id,done:false});
-  return{
-    updatedAt: 0, // <-- IMPORTANT : 0 signifie "données vierges par défaut"
-    subjects:[a,p,b],
-    tasks:[
-      T(today,"matin","Relire le thorax",a,a.chapters[1]),
-      T(today,"aprem","Fiches rénal",p,p.chapters[1]),
-      T(add(today,1),"matin","Abdomen : première lecture",a,a.chapters[2])
-    ],
-    grades:[{id:uid(),subj:a.id,title:"CC anatomie",date:add(today,-6),note:9,max:20,comment:"Confusion sur les branches du plexus brachial."}]
+  return {
+    updatedAt: 0,
+    subjects: [],
+    tasks: [],
+    grades: []
   };
 }
 
@@ -226,6 +217,8 @@ function getFbConfig(){
   return null;
 }
 
+let cloudReady = false;
+
 function initFirebase(){
   const cfg=getFbConfig();
   if(!cfg || typeof firebase==="undefined") return;
@@ -234,45 +227,58 @@ function initFirebase(){
     else fbApp=firebase.app();
     fbAuth=firebase.auth();
     fbDb=firebase.firestore();
-    fbDb.enablePersistence({synchronizeTabs:true}).catch(()=>{});
 
-    fbAuth.onAuthStateChanged(user=>{
+    fbAuth.onAuthStateChanged(async user=>{
       if(fbUnsub){fbUnsub();fbUnsub=null;}
+      cloudReady=false;
       if(user){
         ui.syncEmail=user.email||"";
         ui.syncState="syncing";
         render();
         const ref=fbDb.collection("users").doc(user.uid);
-        fbUnsub=ref.onSnapshot({includeMetadataChanges:true}, snap=>{
+        try{
+          // 1. Lecture forcée depuis le serveur Firebase AVANT d'autoriser toute écriture
+          const initialSnap = await ref.get({source: "server"});
+          if(initialSnap.exists){
+            const remote = initialSnap.data();
+            if(remote && Array.isArray(remote.subjects)){
+              isApplyingRemote=true;
+              S=remote;
+              save(true);
+              isApplyingRemote=false;
+            }
+          } else if(S.updatedAt > 0 && S.subjects.length > 0){
+            // Premier envoi uniquement si l'appareil local a de vraies données créées par l'utilisateur
+            await ref.set(S);
+          }
+        }catch(e){
+          // Hors-ligne : on tente le cache local
+          const cacheSnap = await ref.get().catch(()=>null);
+          if(cacheSnap && cacheSnap.exists){
+            isApplyingRemote=true;
+            S=cacheSnap.data();
+            save(true);
+            isApplyingRemote=false;
+          }
+        }
+
+        // 2. Une fois la récupération initiale terminée, on active l'écoute temps réel et les envois
+        cloudReady=true;
+        ui.syncState="ok";
+        render();
+
+        fbUnsub=ref.onSnapshot(snap=>{
+          if(snap.metadata.hasPendingWrites) return;
           if(snap.exists){
             const remote=snap.data();
-            if(remote && Array.isArray(remote.subjects)){
-              const rTime=remote.updatedAt||0;
-              const lTime=S.updatedAt||0;
-              // Si le cloud a des données plus récentes (ou si le navigateur local est vierge)
-              if(rTime > lTime || (lTime === 0 && rTime > 0)){
-                isApplyingRemote=true;
-                S=remote;
-                save(true);
-                isApplyingRemote=false;
-              } else if(lTime > rTime && !snap.metadata.fromCache){
-                // On n'envoie vers le cloud que si on a des vraies modifications locales
-                ref.set(S).catch(()=>{ui.syncState="err";render();});
-              }
+            if(remote && Array.isArray(remote.subjects) && (remote.updatedAt||0) > (S.updatedAt||0)){
+              isApplyingRemote=true;
+              S=remote;
+              save(true);
+              isApplyingRemote=false;
+              render();
             }
-            ui.syncState="ok";
-          } else if(!snap.metadata.fromCache){
-            // Le document n'existe VRAIMENT pas sur le serveur (pas juste absent du cache local)
-            if(S.updatedAt > 0){
-              ref.set(S).catch(()=>{ui.syncState="err";render();});
-            }
-            ui.syncState="ok";
           }
-          render();
-        }, err=>{
-          ui.syncState="err";
-          ui.msg="Erreur de synchronisation : "+err.message;
-          render();
         });
       } else {
         ui.syncEmail="";
@@ -287,8 +293,8 @@ function initFirebase(){
 }
 
 function scheduleCloudPush(){
-  // Ne jamais pousser automatiquement des données par défaut (updatedAt === 0)
-  if(isApplyingRemote || !fbAuth || !fbAuth.currentUser || !fbDb || !S.updatedAt) return;
+  // Interdit d'envoyer quoi que ce soit tant que la lecture initiale du serveur n'est pas finie
+  if(!cloudReady || isApplyingRemote || !fbAuth || !fbAuth.currentUser || !fbDb) return;
   ui.syncState="syncing";
   clearTimeout(pushTimer);
   pushTimer=setTimeout(()=>{
@@ -673,7 +679,13 @@ document.addEventListener("click",async e=>{
   if(sBtn){
     const act=sBtn.dataset.sync;
     if(act==="logout" && fbAuth){await fbAuth.signOut();ui.msg="Déconnecté du cloud.";render();}
-    else if(act==="force"){scheduleCloudPush();ui.msg="Synchronisation lancée.";render();}
+    else if(act==="force" && fbAuth && fbAuth.currentUser && fbDb){
+  S.updatedAt=Date.now();
+  save(true);
+  fbDb.collection("users").doc(fbAuth.currentUser.uid).set(S)
+    .then(()=>{ui.syncState="ok";ui.msg="Données envoyées vers le cloud !";render();})
+    .catch(e=>{ui.msg="Erreur : "+e.message;render();});
+}
     else if(act==="resetcfg"){localStorage.removeItem(FBCFG_K);location.reload();}
     return;
   }
