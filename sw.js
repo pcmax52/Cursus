@@ -1,4 +1,4 @@
-const CACHE = "cursus-pwa-v2";
+const CACHE = "cursus-pwa-v3";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", e => {
