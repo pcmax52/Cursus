@@ -136,12 +136,14 @@ button:disabled{opacity:.45;cursor:default}
    OU configure-les directement depuis l'onglet "Synchronisation" dans l'app.
    ===================================================================== */
 const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+  
+  apiKey: "AIzaSyC9g1A0Nrz-416dk_LhCU5icne9SxGvNsY",
+  authDomain: "cursus-f7f00.firebaseapp.com",
+  projectId: "cursus-f7f00",
+  storageBucket: "cursus-f7f00.firebasestorage.app",
+  messagingSenderId: "8379474711",
+  appId: "1:8379474711:web:4b51e1d38bf46b9b988d52"
+
 };
 
 const K="cursus-v1", FBCFG_K="cursus-fb-cfg", $=s=>document.querySelector(s);
@@ -158,6 +160,7 @@ let S, ui={tab:"plan",view:"day",date:today,moveId:null,syncState:"local",syncEm
 let H=[], cur="", fh=null;
 let fbApp=null, fbAuth=null, fbDb=null, fbUnsub=null, isApplyingRemote=false, pushTimer=null;
 
+// 1. Dans seed() : mettre updatedAt à 0 pour ne jamais écraser le cloud depuis un navigateur neuf
 function seed(){
   const mk=(n,c,chs)=>({id:uid(),name:n,color:c,chapters:chs.map(([name,level,count,ago])=>({id:uid(),name,level,count,last:ago==null?null:add(today,-ago)}))});
   const a=mk("Anatomie","#D9485F",[["Membre supérieur",3,4,3],["Thorax",1,1,16],["Abdomen",0,0,null]]);
@@ -165,7 +168,7 @@ function seed(){
   const b=mk("Biochimie","#E2A31B",[["Métabolisme du glucose",4,5,2],["Enzymologie",2,2,11]]);
   const T=(date,slot,text,s,c)=>({id:uid(),date,slot,text,subj:s.id,chap:c.id,done:false});
   return{
-    updatedAt: Date.now(),
+    updatedAt: 0, // <-- IMPORTANT : 0 signifie "données vierges par défaut"
     subjects:[a,p,b],
     tasks:[
       T(today,"matin","Relire le thorax",a,a.chapters[1]),
@@ -179,7 +182,6 @@ function seed(){
 function load(){
   try{S=JSON.parse(window.api?window.api.load():localStorage.getItem(K))}catch(e){}
   if(!S||!Array.isArray(S.subjects))S=seed();
-  if(!S.updatedAt)S.updatedAt=Date.now();
 }
 
 function persistLocal(j){
